@@ -1,0 +1,4 @@
+Pillow
+rembg[cpu]
+python-telegram-bot
+onnxruntime
