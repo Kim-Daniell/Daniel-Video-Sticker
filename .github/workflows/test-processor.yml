@@ -1,0 +1,61 @@
+name: Test Python Processor
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "processor.py"
+      - "requirements.txt"
+      - ".github/workflows/test-processor.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  photo-smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Smoke-test photo processor
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw
+          from processor import process_photo
+
+          source = Path("smoke-input.png")
+          output = Path("smoke-output.png")
+
+          image = Image.new("RGB", (320, 240), "white")
+          draw = ImageDraw.Draw(image)
+          draw.ellipse((90, 20, 230, 220), fill="red")
+          image.save(source)
+
+          process_photo(source, output)
+
+          result = Image.open(output).convert("RGBA")
+          assert result.size == (512, 512), f"Unexpected output size: {result.size}"
+          assert output.stat().st_size > 0, "Output file is empty"
+
+          print(f"PASS: generated {result.size} PNG ({output.stat().st_size} bytes)")
+          PY
