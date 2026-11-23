@@ -4,7 +4,6 @@ name: Process Telegram Sticker
 on:
   repository_dispatch:
     types: [process_file]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -34,17 +33,19 @@ jobs:
           pip install -r requirements.txt
           pip install requests
 
-      - name: Download and process sticker
+      - name: Download, process and send sticker
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ github.event.client_payload.chat_id }}
           FILE_ID: ${{ github.event.client_payload.file_id }}
           MEDIA_TYPE: ${{ github.event.client_payload.media_type }}
+          REMOVE_BACKGROUND: ${{ github.event.client_payload.remove_background }}
         run: |
           python - <<'PY'
           import os
           import requests
           from pathlib import Path
+          from PIL import Image
           from processor import process_photo, process_video
 
           token = os.environ["BOT_TOKEN"]
@@ -52,48 +53,85 @@ jobs:
           file_id = os.environ["FILE_ID"]
           media_type = os.environ["MEDIA_TYPE"]
 
+          remove_background = (
+              os.environ.get("REMOVE_BACKGROUND", "false").lower() == "true"
+          )
+
           api = f"https://api.telegram.org/bot{token}"
 
-          info = requests.get(
+          # دریافت اطلاعات فایل از تلگرام
+          info_response = requests.get(
               f"{api}/getFile",
               params={"file_id": file_id},
               timeout=30
-          ).json()
+          )
+          info_response.raise_for_status()
+
+          info = info_response.json()
 
           if not info.get("ok"):
               raise RuntimeError("Telegram getFile failed")
 
           file_path = info["result"]["file_path"]
+
+          # دانلود فایل اصلی
           download_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
 
-          response = requests.get(download_url, timeout=120)
+          response = requests.get(
+              download_url,
+              timeout=120
+          )
           response.raise_for_status()
+
+          if len(response.content) > 20 * 1024 * 1024:
+              raise ValueError("Input file exceeds Telegram download limit")
 
           source = Path("input_file")
           source.write_bytes(response.content)
 
+          # پردازش عکس یا ویدئو
           if media_type == "photo":
-              output = Path("output.png")
-              process_photo(source, output)
+              output = Path("output.webp")
+
+              process_photo(
+                  source,
+                  output,
+                  remove_background=remove_background
+              )
+
           elif media_type == "video":
               output = Path("output.webm")
-              process_video(source, output)
+
+              process_video(
+                  source,
+                  output,
+                  remove_background=remove_background
+              )
+
           else:
               raise ValueError("Unsupported media type")
 
+          # ارسال استیکر به تلگرام
           with output.open("rb") as sticker:
               result = requests.post(
                   f"{api}/sendSticker",
-                  data={"chat_id": chat_id},
-                  files={"sticker": (output.name, sticker)},
+                  data={
+                      "chat_id": chat_id
+                  },
+                  files={
+                      "sticker": (output.name, sticker)
+                  },
                   timeout=120
               )
 
-          print(result.text)
           result.raise_for_status()
 
-          if not result.json().get("ok"):
-              raise RuntimeError("Telegram could not send sticker")
+          telegram_result = result.json()
 
-          print("Sticker sent successfully")
+          if not telegram_result.get("ok"):
+              raise RuntimeError(
+                  f"Telegram sendSticker failed: {telegram_result}"
+              )
+
+          print("Sticker sent successfully!")
           PY
